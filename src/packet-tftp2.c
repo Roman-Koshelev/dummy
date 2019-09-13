@@ -35,6 +35,7 @@
 #include <epan/prefs.h>
 #include <epan/tap.h>
 #include <epan/export_object.h>
+#include <epan/reassemble.h>
 
 #include "packet-tftp2.h"
 
@@ -53,6 +54,9 @@ typedef struct _tftp2_conv_info_t {
   guint        next_tap_block_num;
   GSList       *block_list;
   guint        file_length;
+
+  /* Assembly of fragments */
+  guint        next_reassembled_block_num;
 } tftp2_conv_info_t;
 
 
@@ -68,12 +72,52 @@ static int hf_tftp2_option_name = -1;
 static int hf_tftp2_option_value = -1;
 static int hf_tftp2_data = -1;
 
+static int hf_tftp2_fragments = -1;
+static int hf_tftp2_fragment = -1;
+static int hf_tftp2_fragment_overlap = -1;
+static int hf_tftp2_fragment_overlap_conflicts = -1;
+static int hf_tftp2_fragment_multiple_tails = -1;
+static int hf_tftp2_fragment_too_long_fragment = -1;
+static int hf_tftp2_fragment_error = -1;
+static int hf_tftp2_fragment_count = -1;
+static int hf_tftp2_reassembled_in = -1;
+static int hf_tftp2_reassembled_length = -1;
+static int hf_tftp2_reassembled_data = -1;
+
 static gint ett_tftp2 = -1;
 static gint ett_tftp2_option = -1;
+
+static gint ett_tftp2_fragment = -1;
+static gint ett_tftp2_fragments = -1;
 
 static expert_field ei_tftp2_blocksize_range = EI_INIT;
 
 static dissector_handle_t tftp2_handle;
+
+static heur_dissector_list_t heur_subdissector_list;
+static reassembly_table tftp2_reassembly_table;
+
+static const fragment_items tftp2_frag_items = {
+  /* Fragment subtrees */
+  &ett_tftp2_fragment,
+  &ett_tftp2_fragments,
+  /* Fragment fields */
+  &hf_tftp2_fragments,
+  &hf_tftp2_fragment,
+  &hf_tftp2_fragment_overlap,
+  &hf_tftp2_fragment_overlap_conflicts,
+  &hf_tftp2_fragment_multiple_tails,
+  &hf_tftp2_fragment_too_long_fragment,
+  &hf_tftp2_fragment_error,
+  &hf_tftp2_fragment_count,
+  /* Reassembled in field */
+  &hf_tftp2_reassembled_in,
+  /* Reassembled length field */
+  &hf_tftp2_reassembled_length,
+  &hf_tftp2_reassembled_data,
+  /* Tag */
+  "TFTP2 fragments"
+};
 
 #define UDP_PORT_TFTP2_RANGE    "59"
 
@@ -612,6 +656,7 @@ dissect_embeddedtftp2_heur(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
     tftp2_info->next_tap_block_num = 1;
     tftp2_info->block_list = NULL;
     tftp2_info->file_length = 0;
+    tftp2_info->next_reassembled_block_num = 1;
 
     conversation_add_proto_data(conversation, proto_tftp2, tftp2_info);
   }
@@ -678,6 +723,7 @@ dissect_tftp2(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U
     tftp2_info->next_tap_block_num = 1;
     tftp2_info->block_list = NULL;
     tftp2_info->file_length = 0;
+    tftp2_info->next_reassembled_block_num = 1;
     conversation_add_proto_data(conversation, proto_tftp2, tftp2_info);
   }
 
@@ -744,10 +790,59 @@ proto_register_tftp2(void)
       { "Data",       "tftp2.data",
         FT_BYTES, BASE_NONE, NULL, 0x0,
         NULL, HFILL }},
+
+      {&hf_tftp2_fragments,
+       {"TFTP2 fragments", "tftp2.fragments", FT_NONE, BASE_NONE,
+        NULL, 0x00, NULL, HFILL}},
+
+      {&hf_tftp2_fragment,
+       {"TFTP2 fragment", "tftp2.fragment", FT_FRAMENUM,
+        BASE_NONE, NULL, 0x00, NULL, HFILL}},
+
+      {&hf_tftp2_fragment_overlap,
+       {"TFTP2 fragment overlap", "tftp2.fragment.overlap",
+        FT_BOOLEAN, 0, NULL, 0x00, NULL, HFILL}},
+
+      {&hf_tftp2_fragment_overlap_conflicts,
+       {"TFTP2 fragment overlapping with conflicting data",
+        "tftp2.fragment.overlap.conflicts", FT_BOOLEAN, 0, NULL,
+        0x00, NULL, HFILL}},
+
+      {&hf_tftp2_fragment_multiple_tails,
+       {"TFTP2 has multiple tail fragments",
+        "tftp2.fragment.multiple_tails", FT_BOOLEAN, 0, NULL, 0x00,
+        NULL, HFILL}},
+
+      {&hf_tftp2_fragment_too_long_fragment,
+       {"TFTP2 fragment too long",
+        "tftp2.fragment.too_long_fragment", FT_BOOLEAN, 0, NULL,
+        0x00, NULL, HFILL}},
+
+      {&hf_tftp2_fragment_error,
+       {"TFTP2 defragmentation error", "tftp2.fragment.error",
+        FT_FRAMENUM, BASE_NONE, NULL, 0x00, NULL, HFILL}},
+
+      {&hf_tftp2_fragment_count,
+       {"TFTP2 fragment count", "tftp2.fragment.count",
+        FT_UINT32, BASE_DEC, NULL, 0x00, NULL, HFILL}},
+
+      {&hf_tftp2_reassembled_in,
+       {"Reassembled TFTP2 in frame", "tftp2.reassembled.in", FT_FRAMENUM,
+        BASE_NONE, NULL, 0x00, NULL, HFILL}},
+
+      {&hf_tftp2_reassembled_length,
+       {"Reassembled TFTP2 length", "tftp2.reassembled.length",
+        FT_UINT32, BASE_DEC, NULL, 0x00, "The total length of the reassembled payload", HFILL}},
+
+      {&hf_tftp2_reassembled_data,
+       {"Reassembled TFTP2 data", "tftp2.reassembled.data", FT_BYTES,
+        BASE_NONE, NULL, 0x0, "The reassembled payload", HFILL}},
   };
   static gint *ett[] = {
     &ett_tftp2,
     &ett_tftp2_option,
+    &ett_tftp2_fragment,
+    &ett_tftp2_fragments,
   };
 
   static ei_register_info ei[] = {
@@ -761,6 +856,9 @@ proto_register_tftp2(void)
   proto_register_subtree_array(ett, array_length(ett));
   expert_tftp2 = expert_register_protocol(proto_tftp2);
   expert_register_field_array(expert_tftp2, ei, array_length(ei));
+
+  heur_subdissector_list = register_heur_dissector_list("tftp2", proto_tftp2);
+  reassembly_table_register(&tftp2_reassembly_table, &addresses_reassembly_table_functions);
 
   tftp2_handle = register_dissector("tftp2", dissect_tftp2, proto_tftp2);
 
