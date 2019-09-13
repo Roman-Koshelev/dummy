@@ -345,7 +345,7 @@ static void dissect_tftp2_message(tftp2_conv_info_t *tftp2_info,
     tftp2_info->destination_file = NULL;
 
     col_append_fstr(pinfo->cinfo, COL_INFO, ", File: %s",
-                    tvb_format_stringzpad(tvb, offset, i1));
+                    tvb_format_text(tvb, offset, i1 - 1));
 
     offset += i1;
 
@@ -354,7 +354,7 @@ static void dissect_tftp2_message(tftp2_conv_info_t *tftp2_info,
                         tvb, offset, i1, ENC_ASCII|ENC_NA);
 
     col_append_fstr(pinfo->cinfo, COL_INFO, ", Transfer type: %s",
-                    tvb_format_stringzpad(tvb, offset, i1));
+                    tvb_format_text(tvb, offset, i1 - 1));
 
     offset += i1;
 
@@ -370,7 +370,7 @@ static void dissect_tftp2_message(tftp2_conv_info_t *tftp2_info,
     tftp2_info->source_file = NULL; /* see above */
 
     col_append_fstr(pinfo->cinfo, COL_INFO, ", File: %s",
-                    tvb_format_stringzpad(tvb, offset, i1));
+                    tvb_format_text(tvb, offset, i1 - 1));
 
     offset += i1;
 
@@ -379,7 +379,7 @@ static void dissect_tftp2_message(tftp2_conv_info_t *tftp2_info,
                         tvb, offset, i1, ENC_ASCII|ENC_NA);
 
     col_append_fstr(pinfo->cinfo, COL_INFO, ", Transfer type: %s",
-                    tvb_format_stringzpad(tvb, offset, i1));
+                    tvb_format_text(tvb, offset, i1 - 1));
 
     offset += i1;
 
@@ -516,7 +516,7 @@ static void dissect_tftp2_message(tftp2_conv_info_t *tftp2_info,
                         i1, ENC_ASCII|ENC_NA);
 
     col_append_fstr(pinfo->cinfo, COL_INFO, ", Message: %s",
-                    tvb_format_stringzpad(tvb, offset, i1));
+                    tvb_format_text(tvb, offset, i1 - 1));
 
     expert_add_info(pinfo, NULL, &ei_tftp2_blocksize_range);
     break;
