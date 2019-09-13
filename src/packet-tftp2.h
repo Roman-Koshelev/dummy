@@ -1,4 +1,4 @@
-/* packet-tftp.h
+/* packet-tftp2.h
  *
  * Wireshark - Network traffic analyzer
  * By Gerald Combs <gerald@wireshark.org>
