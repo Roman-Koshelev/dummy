@@ -57,6 +57,7 @@ typedef struct _tftp2_conv_info_t {
 
   /* Assembly of fragments */
   guint        next_reassembled_block_num;
+  guint        reassembly_id;
 } tftp2_conv_info_t;
 
 
@@ -96,6 +97,8 @@ static dissector_handle_t tftp2_handle;
 
 static heur_dissector_list_t heur_subdissector_list;
 static reassembly_table tftp2_reassembly_table;
+
+static guint32 global_reassembly_id_counter = 0;
 
 static const fragment_items tftp2_frag_items = {
   /* Fragment subtrees */
@@ -462,10 +465,63 @@ static void dissect_tftp2_message(tftp2_conv_info_t *tftp2_info,
                     blocknum,
                     (bytes < tftp2_info->blocksize)?" (last)":"" );
 
-    /* Show data in tree */
-    if (bytes > 0) {
-      data_tvb = tvb_new_subset_length_caplen(tvb, offset, -1, bytes);
-      call_data_dissector(data_tvb, pinfo, tree);
+    if (!tftp2_info->blocks_missing) {
+      if (blocknum == 1) {
+        tftp2_info->next_reassembled_block_num = 1;
+      }
+
+      if (blocknum != tftp2_info->next_reassembled_block_num) {
+        if (bytes > 0) {
+          data_tvb = tvb_new_subset_length_caplen(tvb, offset, -1, bytes);
+          call_data_dissector(data_tvb, pinfo, tree);
+        }
+      } else {
+        tftp2_info->next_reassembled_block_num++;
+
+        gboolean   save_fragmented;
+        tvbuff_t* new_tvb = NULL;
+        tvbuff_t* next_tvb = NULL;
+        fragment_head *frag_msg = NULL;
+
+        save_fragmented = pinfo->fragmented;
+        pinfo->fragmented = TRUE;
+
+        frag_msg = fragment_add_seq_check(
+            &tftp2_reassembly_table, tvb, offset, pinfo, tftp2_info->reassembly_id, NULL,
+            tftp2_info->next_reassembled_block_num - 2, tvb_captured_length_remaining(tvb, offset),
+            !(bytes < tftp2_info->blocksize));
+
+        new_tvb = process_reassembled_data(tvb, offset, pinfo, "Reassembled TFTP2",
+                                        frag_msg, &tftp2_frag_items,
+                                        NULL, tftp2_tree);
+        if (new_tvb) { /* take it all */
+          tftp2_info->next_reassembled_block_num = 1;
+          next_tvb = new_tvb;
+
+          heur_dtbl_entry_t *hdtbl_entry = NULL;
+          void* data = (void*)((tftp2_info->source_file == NULL) ? tftp2_info->destination_file : tftp2_info->source_file);
+          if (!dissector_try_heuristic(heur_subdissector_list,
+                                       next_tvb, pinfo, tree,
+                                       &hdtbl_entry, data)) {
+            if (bytes > 0) {
+              data_tvb = tvb_new_subset_length_caplen(tvb, offset, -1, bytes);
+              call_data_dissector(data_tvb, pinfo, tree);
+            }
+          }
+        } else { /* make a new subset */
+          if (bytes > 0) {
+            data_tvb = tvb_new_subset_length_caplen(tvb, offset, -1, bytes);
+            call_data_dissector(data_tvb, pinfo, tree);
+          }
+        }
+        pinfo->fragmented = save_fragmented;
+      }
+    } else {
+      /* Show data in tree */
+      if (bytes > 0) {
+        data_tvb = tvb_new_subset_length_caplen(tvb, offset, -1, bytes);
+        call_data_dissector(data_tvb, pinfo, tree);
+      }
     }
 
     /* If Export Object tap is listening, need to accumulate blocks info list
@@ -657,6 +713,7 @@ dissect_embeddedtftp2_heur(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
     tftp2_info->block_list = NULL;
     tftp2_info->file_length = 0;
     tftp2_info->next_reassembled_block_num = 1;
+    tftp2_info->reassembly_id = global_reassembly_id_counter++;
 
     conversation_add_proto_data(conversation, proto_tftp2, tftp2_info);
   }
@@ -724,6 +781,7 @@ dissect_tftp2(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void* data _U
     tftp2_info->block_list = NULL;
     tftp2_info->file_length = 0;
     tftp2_info->next_reassembled_block_num = 1;
+    tftp2_info->reassembly_id = global_reassembly_id_counter++;
     conversation_add_proto_data(conversation, proto_tftp2, tftp2_info);
   }
 
