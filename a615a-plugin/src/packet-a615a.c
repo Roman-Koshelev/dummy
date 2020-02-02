@@ -2,13 +2,11 @@
 
 #include <config.h>
 
-#include <epan/conversation.h>
 #include <epan/packet.h>
 
 #define PARS_RET_UINT8(proto_tree, name)                                                      \
     guint32 name;                                                                             \
-    proto_tree_add_item_ret_uint(proto_tree, hf_a615a_##name, tvb, offset, 1, ENC_BIG_ENDIAN, \
-                                 &name);                                                      \
+    proto_tree_add_item_ret_uint(proto_tree, hf_a615a_##name, tvb, offset, 1, ENC_NA, &name); \
     offset += 1
 
 #define PARS_RET_UINT16(proto_tree, name)                                                     \
@@ -367,26 +365,36 @@ static void dissect_a615a_protocol_file(tvbuff_t *tvb, packet_info *pinfo, int o
     }
 }
 
+struct tftpinfo {
+    const char *filename;
+};
+
 static int dissect_a615a(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
-    col_set_str(pinfo->cinfo, COL_PROTOCOL, "A615a-3");
-    const char *filename = data;
+    return 0;
+}
+
+static gboolean dissect_a615a_heur(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
+{
+    guint psize = tvb_captured_length(tvb);
+    if (psize < 6) return FALSE;
+    if ((tvb_get_ntohl(tvb, 0) != psize) || ((gchar)tvb_get_guint8(tvb, 5) != 'A')) return FALSE;
+
+    const char *filename = ((struct tftpinfo *)data)->filename;
     for (int i = 0; i < (sizeof(a615a_file) / sizeof(string_pair)); ++i) {
         const char *extension = a615a_file[i].abbreviated;
-
         if (g_str_has_suffix(filename, extension)) {
+            col_set_str(pinfo->cinfo, COL_PROTOCOL, "A615a-3");
             col_append_fstr(pinfo->cinfo, COL_INFO, ", %s", filename);
             dissect_a615a_protocol_file(tvb, pinfo, 0, tree, i);
-            break;
+            return TRUE;
         }
     }
-
-    return 0;
+    return FALSE;
 }
 
 void proto_register_a615a(void)
 {
-    proto_a615a = proto_register_protocol("Arinc 615a Protocol", "A615a-3", "a615a");
     static hf_register_info hf[] = {
         {&hf_a615a_file_length,
          {"File Length", "a615a.file_length", FT_UINT32, BASE_DEC, NULL, 0x0,
@@ -421,7 +429,7 @@ void proto_register_a615a(void)
           VALS(a615a_operation_status_codes), 0x0, "A615a Download Operation Status Code", HFILL}},
         {&hf_a615a_part_load_operation_status,
          {"Part Load Operation Status Code", "a615a.upload.status_code", FT_UINT16, BASE_DEC,
-          VALS(a615a_operation_status_codes), 0x0, "A615a Part Load Op Status Code", HFILL}},
+          VALS(a615a_operation_status_codes), 0x0, "A615a Part Load Operation Status Code", HFILL}},
         {&hf_a615a_load_ratio,
          {"Load Ratio", "a615a.load_ratio", FT_STRINGZ, BASE_NONE, NULL, 0x0,
           "A615a Load Operation Ratio", HFILL}},
@@ -485,29 +493,14 @@ void proto_register_a615a(void)
 
     static gint *ett[] = {&ett_a615a_protocol_root};
 
+    proto_a615a = proto_register_protocol("Arinc 615a Protocol", "A615a-3", "a615a");
     proto_register_field_array(proto_a615a, hf, array_length(hf));
     proto_register_subtree_array(ett, array_length(ett));
-}
-
-static gboolean dissect_a615a_heur(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
-{
-    // TODO сдесь проверку
-    // fprintf(stderr, "ololo2 %d\n", (int)tvb_captured_length(tvb));
-    // return (FALSE);
-
-    /*   and do the dissection */
-    struct tftpinfo {
-        const char *filename;
-    };
-    fprintf(stderr, "EEEEe\n");
-    dissect_a615a(tvb, pinfo, tree, (void *)(((struct tftpinfo *)data)->filename));
-
-    return (TRUE);
+    a615a_handle = create_dissector_handle(dissect_a615a, proto_a615a);
 }
 
 void proto_reg_handoff_a615a(void)
 {
-    a615a_handle = create_dissector_handle(dissect_a615a, proto_a615a);
     heur_dissector_add("tftp", dissect_a615a_heur, "Arinc 615a Protocol", "a615a-3", proto_a615a,
                        HEURISTIC_ENABLE);
 }
